@@ -115,24 +115,4 @@ public class IPAtoAzureVisemeConverter
 
         return blendShapeFrames;
     }
-
-    public static void Main()
-    {
-        string ipaInput = "pætɪk"; // Example IPA input
-        float audioDuration = 2.0f; // 2 seconds of speech
-
-        List<VisemeBlendShapeData> result = ConvertToVisemeBlendShapes(ipaInput, audioDuration);
-
-        Console.WriteLine("Generated Viseme BlendShape Data:");
-        foreach (var frame in result)
-        {
-            Console.Write($"Frame: {frame.FrameIndex}, BlendShapes: [");
-            for (int i = 0; i < frame.BlendShapes.Length; i++)
-            {
-                if (frame.BlendShapes[i][0] > 0)
-                    Console.Write($" Viseme {i}: {frame.BlendShapes[i][0]:F2} ");
-            }
-            Console.WriteLine("]");
-        }
-    }
 }
