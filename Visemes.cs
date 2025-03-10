@@ -1,17 +1,34 @@
 using System;
 using System.Collections.Generic;
-using System.Text.RegularExpressions;
 
-public class IPAParser
+public class IPAtoAzureVisemeConverter
 {
-    // List of multi-character IPA phonemes (e.g., "aɪ", "oʊ", etc.)
+    // List of multi-character IPA phonemes
     private static readonly List<string> MultiCharPhonemes = new List<string>
     {
         "aɪ", "aʊ", "ɔɪ", "eɪ", "oʊ", "tʃ", "dʒ", "ʃ", "ʒ", "θ", "ð", "ŋ"
     };
 
+    // Map IPA phonemes to Azure viseme IDs (22 IDs based on Microsoft's documentation)
+    private static readonly Dictionary<string, int> ipaToAzureViseme = new Dictionary<string, int>
+    {
+        {"p", 0}, {"b", 1}, {"m", 2}, {"f", 3}, {"v", 4}, {"θ", 5}, {"ð", 6},
+        {"t", 7}, {"d", 8}, {"s", 9}, {"z", 10}, {"ʃ", 11}, {"ʒ", 12},
+        {"k", 13}, {"g", 14}, {"ŋ", 15}, {"h", 16}, {"ɹ", 17}, {"l", 18},
+        {"j", 19}, {"w", 20}, {"i", 21}, {"ɪ", 21}, {"e", 22}, {"æ", 23},
+        {"ɑ", 24}, {"ɔ", 25}, {"o", 26}, {"ʊ", 27}, {"u", 28}, {"ʌ", 29},
+        {"ə", 30}, {"aɪ", 31}, {"aʊ", 32}, {"ɔɪ", 33}, {"eɪ", 34}, {"oʊ", 35}
+    };
+
+    public class VisemeFrame
+    {
+        public int FrameIndex;  // Time index of the frame
+        public int VisemeId;    // Azure Viseme ID
+        public float BlendWeight; // Strength (0-1)
+    }
+
     /// <summary>
-    /// Splits a single IPA string into phoneme tokens.
+    /// Tokenizes an IPA string into phonemes.
     /// </summary>
     public static List<string> TokenizeIPA(string ipaString)
     {
@@ -23,106 +40,61 @@ public class IPAParser
             string currentChar = ipaString[i].ToString();
             string nextChar = (i + 1 < ipaString.Length) ? ipaString[i + 1].ToString() : "";
 
-            // Check for multi-character phoneme
             if (!string.IsNullOrEmpty(nextChar) && MultiCharPhonemes.Contains(currentChar + nextChar))
             {
                 tokens.Add(currentChar + nextChar);
-                i += 2; // Move past both characters
+                i += 2;
             }
             else
             {
                 tokens.Add(currentChar);
-                i++; // Move to the next character
+                i++;
             }
         }
 
         return tokens;
     }
 
-
-public class IPAtoAzureVisemeConverter
-{
-    // Map IPA phonemes to Azure viseme indices (example mapping)
-    private static readonly Dictionary<string, int> ipaToAzureViseme = new Dictionary<string, int>
-    {
-        {"p", 0},  // Example: "p" maps to viseme 0
-        {"b", 1},  // "b" maps to viseme 1
-        {"m", 2},  // "m" maps to viseme 2
-        {"f", 3},  // "f" maps to viseme 3
-        {"v", 4},  // "v" maps to viseme 4
-        {"θ", 5},  // "th" unvoiced (θ)
-        {"ð", 6},  // "th" voiced (ð)
-        {"t", 7},  // "t"
-        {"d", 8},  // "d"
-        {"s", 9},  // "s"
-        {"z", 10}, // "z"
-        {"ʃ", 11}, // "sh"
-        {"ʒ", 12}, // "zh"
-        {"k", 13}, // "k"
-        {"g", 14}, // "g"
-        {"ŋ", 15}, // "ng"
-        {"h", 16}, // "h"
-        {"ɹ", 17}, // "r"
-        {"l", 18}, // "l"
-        {"j", 19}, // "y"
-        {"w", 20}, // "w"
-        {"i", 21}, // "ee"
-        {"ɪ", 22}, // "ih"
-        {"e", 23}, // "eh"
-        {"æ", 24}, // "aa"
-        {"ɑ", 25}, // "ah"
-        {"ɔ", 26}, // "aw"
-        {"o", 27}, // "oh"
-        {"ʊ", 28}, // "uh"
-        {"u", 29}, // "oo"
-        {"ʌ", 30}, // "uh" (stressed)
-        {"ə", 31}, // "schwa"
-        {"aɪ", 32}, // "eye"
-        {"aʊ", 33}, // "ow"
-        {"ɔɪ", 34}, // "oy"
-        {"eɪ", 35}, // "ay"
-        {"oʊ", 36}  // "oh"
-    };
-
-    public class VisemeFrame
-    {
-        public int FrameIndex;  // The time index of the frame
-        public int VisemeIndex; // The Azure viseme ID
-        public float BlendWeight; // Strength of the viseme (0-1)
-    }
-
     /// <summary>
-    /// Converts IPA phonemes into Azure blendshape visemes.
+    /// Converts a tokenized IPA phoneme list into Azure viseme frames.
     /// </summary>
-    /// <param name="ipaPhonemes">List of phonemes with timing.</param>
-    /// <returns>List of viseme animation frames.</returns>
-    public static List<VisemeFrame> ConvertPhonemesToVisemes(List<Tuple<string, int>> ipaPhonemes)
+    public static List<VisemeFrame> ConvertToVisemes(string ipaString, int startFrame = 0, int frameStep = 5)
     {
         List<VisemeFrame> visemeFrames = new List<VisemeFrame>();
+        List<string> phonemes = TokenizeIPA(ipaString);
+        int frameIndex = startFrame;
 
-        foreach (var phonemeData in ipaPhonemes)
+        foreach (var phoneme in phonemes)
         {
-            string ipa = phonemeData.Item1;
-            int frameIndex = phonemeData.Item2;
-
-            if (ipaToAzureViseme.TryGetValue(ipa, out int visemeIndex))
+            if (ipaToAzureViseme.TryGetValue(phoneme, out int visemeId))
             {
                 visemeFrames.Add(new VisemeFrame
                 {
                     FrameIndex = frameIndex,
-                    VisemeIndex = visemeIndex,
-                    BlendWeight = 1.0f  // Assume full intensity
+                    VisemeId = visemeId,
+                    BlendWeight = 1.0f // Full intensity for now (can adjust based on duration)
                 });
+
+                frameIndex += frameStep; // Move to next frame
             }
             else
             {
-                Console.WriteLine($"Warning: No mapping for IPA phoneme '{ipa}'");
+                Console.WriteLine($"[WARNING] Unrecognized IPA phoneme: '{phoneme}'");
             }
         }
 
         return visemeFrames;
     }
-}
 
-  
+    public static void Main()
+    {
+        string ipaInput = "pætɪk"; // Example IPA input (for "patic")
+        List<VisemeFrame> result = ConvertToVisemes(ipaInput);
+
+        Console.WriteLine("Generated Viseme Frames:");
+        foreach (var frame in result)
+        {
+            Console.WriteLine($"Frame: {frame.FrameIndex}, Viseme: {frame.VisemeId}, Weight: {frame.BlendWeight}");
+        }
+    }
 }
