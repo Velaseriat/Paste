@@ -22,9 +22,9 @@ public class IPAtoAzureVisemeConverter
 
     public class VisemeFrame
     {
-        public int FrameIndex;  // Time index of the frame
+        public int FrameIndex;  // Time index of the frame (at 60 FPS)
         public int VisemeId;    // Azure Viseme ID
-        public float BlendWeight; // Strength (0-1)
+        public float BlendWeight; // Strength of viseme (0-1), smoothed
     }
 
     /// <summary>
@@ -56,49 +56,67 @@ public class IPAtoAzureVisemeConverter
     }
 
     /// <summary>
-    /// Converts a tokenized IPA phoneme list into Azure viseme frames.
+    /// Converts IPA phonemes to Azure visemes with smoothing.
     /// </summary>
-public static List<VisemeFrame> ConvertToVisemes(string ipaString, float audioDuration, int totalFrames)
-{
-    List<VisemeFrame> visemeFrames = new List<VisemeFrame>();
-    List<string> phonemes = TokenizeIPA(ipaString);
-
-    // Calculate dynamic frame spacing
-    int frameStep = totalFrames / phonemes.Count;  // Distribute phonemes evenly
-
-    int frameIndex = 0;
-
-    foreach (var phoneme in phonemes)
+    public static List<VisemeFrame> ConvertToVisemes(string ipaString, float audioDuration)
     {
-        if (ipaToAzureViseme.TryGetValue(phoneme, out int visemeId))
+        List<VisemeFrame> visemeFrames = new List<VisemeFrame>();
+        List<string> phonemes = TokenizeIPA(ipaString);
+
+        int totalFrames = (int)(audioDuration * 60); // Convert audio duration to frame count (60 FPS)
+        int frameStep = totalFrames / Math.Max(phonemes.Count, 1); // Distribute phonemes over the frames
+
+        int frameIndex = 0;
+        int previousViseme = -1;
+        float previousWeight = 0f;
+
+        foreach (var phoneme in phonemes)
         {
-            visemeFrames.Add(new VisemeFrame
+            if (ipaToAzureViseme.TryGetValue(phoneme, out int visemeId))
             {
-                FrameIndex = frameIndex,
-                VisemeId = visemeId,
-                BlendWeight = 1.0f
-            });
+                // Apply smoothing: If the previous viseme is different, add transition frames
+                if (previousViseme != -1 && previousViseme != visemeId)
+                {
+                    int transitionFrames = frameStep / 2; // Half of step for smooth transition
+                    for (int t = 1; t <= transitionFrames; t++)
+                    {
+                        float weight = (float)t / transitionFrames; // Gradually increase weight
+                        visemeFrames.Add(new VisemeFrame
+                        {
+                            FrameIndex = frameIndex - transitionFrames + t,
+                            VisemeId = previousViseme,
+                            BlendWeight = (1 - weight) * previousWeight
+                        });
 
-            frameIndex += frameStep;  // Adjust dynamically based on total frames
+                        visemeFrames.Add(new VisemeFrame
+                        {
+                            FrameIndex = frameIndex - transitionFrames + t,
+                            VisemeId = visemeId,
+                            BlendWeight = weight
+                        });
+                    }
+                }
+
+                // Main viseme frame
+                visemeFrames.Add(new VisemeFrame
+                {
+                    FrameIndex = frameIndex,
+                    VisemeId = visemeId,
+                    BlendWeight = 1.0f
+                });
+
+                // Store previous values for smoothing
+                previousViseme = visemeId;
+                previousWeight = 1.0f;
+                
+                frameIndex += frameStep; // Move to next phoneme frame
+            }
+            else
+            {
+                Console.WriteLine($"[WARNING] Unrecognized IPA phoneme: '{phoneme}'");
+            }
         }
-        else
-        {
-            Console.WriteLine($"[WARNING] Unrecognized IPA phoneme: '{phoneme}'");
-        }
-    }
 
-    return visemeFrames;
-}
-
-    public static void Main()
-    {
-        string ipaInput = "pætɪk"; // Example IPA input (for "patic")
-        List<VisemeFrame> result = ConvertToVisemes(ipaInput);
-
-        Console.WriteLine("Generated Viseme Frames:");
-        foreach (var frame in result)
-        {
-            Console.WriteLine($"Frame: {frame.FrameIndex}, Viseme: {frame.VisemeId}, Weight: {frame.BlendWeight}");
-        }
+        return visemeFrames;
     }
 }
