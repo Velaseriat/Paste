@@ -58,33 +58,37 @@ public class IPAtoAzureVisemeConverter
     /// <summary>
     /// Converts a tokenized IPA phoneme list into Azure viseme frames.
     /// </summary>
-    public static List<VisemeFrame> ConvertToVisemes(string ipaString, int startFrame = 0, int frameStep = 5)
+public static List<VisemeFrame> ConvertToVisemes(string ipaString, float audioDuration, int totalFrames)
+{
+    List<VisemeFrame> visemeFrames = new List<VisemeFrame>();
+    List<string> phonemes = TokenizeIPA(ipaString);
+
+    // Calculate dynamic frame spacing
+    int frameStep = totalFrames / phonemes.Count;  // Distribute phonemes evenly
+
+    int frameIndex = 0;
+
+    foreach (var phoneme in phonemes)
     {
-        List<VisemeFrame> visemeFrames = new List<VisemeFrame>();
-        List<string> phonemes = TokenizeIPA(ipaString);
-        int frameIndex = startFrame;
-
-        foreach (var phoneme in phonemes)
+        if (ipaToAzureViseme.TryGetValue(phoneme, out int visemeId))
         {
-            if (ipaToAzureViseme.TryGetValue(phoneme, out int visemeId))
+            visemeFrames.Add(new VisemeFrame
             {
-                visemeFrames.Add(new VisemeFrame
-                {
-                    FrameIndex = frameIndex,
-                    VisemeId = visemeId,
-                    BlendWeight = 1.0f // Full intensity for now (can adjust based on duration)
-                });
+                FrameIndex = frameIndex,
+                VisemeId = visemeId,
+                BlendWeight = 1.0f
+            });
 
-                frameIndex += frameStep; // Move to next frame
-            }
-            else
-            {
-                Console.WriteLine($"[WARNING] Unrecognized IPA phoneme: '{phoneme}'");
-            }
+            frameIndex += frameStep;  // Adjust dynamically based on total frames
         }
-
-        return visemeFrames;
+        else
+        {
+            Console.WriteLine($"[WARNING] Unrecognized IPA phoneme: '{phoneme}'");
+        }
     }
+
+    return visemeFrames;
+}
 
     public static void Main()
     {
