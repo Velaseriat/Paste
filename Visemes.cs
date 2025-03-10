@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 
+public record VisemeBlendShapeData(int FrameIndex, float[][] BlendShapes);
+
 public class IPAtoAzureVisemeConverter
 {
     // List of multi-character IPA phonemes
@@ -19,13 +21,6 @@ public class IPAtoAzureVisemeConverter
         {"ɑ", 24}, {"ɔ", 25}, {"o", 26}, {"ʊ", 27}, {"u", 28}, {"ʌ", 29},
         {"ə", 30}, {"aɪ", 31}, {"aʊ", 32}, {"ɔɪ", 33}, {"eɪ", 34}, {"oʊ", 35}
     };
-
-    public class VisemeFrame
-    {
-        public int FrameIndex;  // Time index of the frame (at 60 FPS)
-        public int VisemeId;    // Azure Viseme ID
-        public float BlendWeight; // Strength of viseme (0-1), smoothed
-    }
 
     /// <summary>
     /// Tokenizes an IPA string into phonemes.
@@ -56,59 +51,60 @@ public class IPAtoAzureVisemeConverter
     }
 
     /// <summary>
-    /// Converts IPA phonemes to Azure visemes with smoothing.
+    /// Converts IPA phonemes into Azure visemes formatted as SpeechSynthesisVisemeEventArgs.Animation.
     /// </summary>
-    public static List<VisemeFrame> ConvertToVisemes(string ipaString, float audioDuration)
+    public static List<VisemeBlendShapeData> ConvertToVisemeBlendShapes(string ipaString, float audioDuration)
     {
-        List<VisemeFrame> visemeFrames = new List<VisemeFrame>();
+        List<VisemeBlendShapeData> blendShapeFrames = new List<VisemeBlendShapeData>();
         List<string> phonemes = TokenizeIPA(ipaString);
 
         int totalFrames = (int)(audioDuration * 60); // Convert audio duration to frame count (60 FPS)
-        int frameStep = totalFrames / Math.Max(phonemes.Count, 1); // Distribute phonemes over the frames
+        int frameStep = totalFrames / Math.Max(phonemes.Count, 1); // Distribute phonemes over frames
 
         int frameIndex = 0;
         int previousViseme = -1;
-        float previousWeight = 0f;
 
         foreach (var phoneme in phonemes)
         {
             if (ipaToAzureViseme.TryGetValue(phoneme, out int visemeId))
             {
-                // Apply smoothing: If the previous viseme is different, add transition frames
+                // Create BlendShapes[55][1] (Microsoft's SpeechSynthesisVisemeEventArgs.Animation format)
+                float[][] blendShapes = new float[55][];
+                for (int i = 0; i < 55; i++)
+                {
+                    blendShapes[i] = new float[1]; // Each index holds a single weight
+                }
+
+                // Apply smoothing if transitioning
                 if (previousViseme != -1 && previousViseme != visemeId)
                 {
                     int transitionFrames = frameStep / 2; // Half of step for smooth transition
                     for (int t = 1; t <= transitionFrames; t++)
                     {
-                        float weight = (float)t / transitionFrames; // Gradually increase weight
-                        visemeFrames.Add(new VisemeFrame
-                        {
-                            FrameIndex = frameIndex - transitionFrames + t,
-                            VisemeId = previousViseme,
-                            BlendWeight = (1 - weight) * previousWeight
-                        });
+                        float weight = (float)t / transitionFrames; // Gradual transition weight
 
-                        visemeFrames.Add(new VisemeFrame
+                        // Create blendshape arrays for transition
+                        float[][] transitionShapes = new float[55][];
+                        for (int i = 0; i < 55; i++)
                         {
-                            FrameIndex = frameIndex - transitionFrames + t,
-                            VisemeId = visemeId,
-                            BlendWeight = weight
-                        });
+                            transitionShapes[i] = new float[1];
+                        }
+
+                        // Blend previous and new viseme smoothly
+                        transitionShapes[previousViseme][0] = (1 - weight);
+                        transitionShapes[visemeId][0] = weight;
+
+                        blendShapeFrames.Add(new VisemeBlendShapeData(frameIndex - transitionFrames + t, transitionShapes));
                     }
                 }
 
-                // Main viseme frame
-                visemeFrames.Add(new VisemeFrame
-                {
-                    FrameIndex = frameIndex,
-                    VisemeId = visemeId,
-                    BlendWeight = 1.0f
-                });
+                // Set full weight for the current viseme
+                blendShapes[visemeId][0] = 1.0f;
 
-                // Store previous values for smoothing
+                // Store blendshape data
+                blendShapeFrames.Add(new VisemeBlendShapeData(frameIndex, blendShapes));
+
                 previousViseme = visemeId;
-                previousWeight = 1.0f;
-                
                 frameIndex += frameStep; // Move to next phoneme frame
             }
             else
@@ -117,6 +113,26 @@ public class IPAtoAzureVisemeConverter
             }
         }
 
-        return visemeFrames;
+        return blendShapeFrames;
+    }
+
+    public static void Main()
+    {
+        string ipaInput = "pætɪk"; // Example IPA input
+        float audioDuration = 2.0f; // 2 seconds of speech
+
+        List<VisemeBlendShapeData> result = ConvertToVisemeBlendShapes(ipaInput, audioDuration);
+
+        Console.WriteLine("Generated Viseme BlendShape Data:");
+        foreach (var frame in result)
+        {
+            Console.Write($"Frame: {frame.FrameIndex}, BlendShapes: [");
+            for (int i = 0; i < frame.BlendShapes.Length; i++)
+            {
+                if (frame.BlendShapes[i][0] > 0)
+                    Console.Write($" Viseme {i}: {frame.BlendShapes[i][0]:F2} ");
+            }
+            Console.WriteLine("]");
+        }
     }
 }
