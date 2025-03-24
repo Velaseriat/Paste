@@ -1,0 +1,319 @@
+variables:
+  BUILD_NAME: Felsan
+  IMAGE: unityci/editor # https://hub.docker.com/r/unityci/editor
+  IMAGE_VERSION: 3 # This will automatically use latest v3.x.x, see https://github.com/game-ci/docker/releases
+  UNITY_DIR: $CI_PROJECT_DIR # this needs to be an absolute path. Defaults to the root of your tree.
+  VERSION_NUMBER_VAR: $CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID-$CI_JOB_ID
+  VERSION_BUILD_VAR: $CI_PIPELINE_IID
+
+  NVIDIA_VISIBLE_DEVICES: all
+  NVIDIA_DRIVER_CAPABILITIES: all
+  VK_ICD_FILENAMES: "/usr/share/vulkan/icd.d/nvidia_icd.json"
+  VK_LAYER_PATH: "/usr/share/vulkan/explicit_layer.d"
+
+stages:
+  - prepare
+  - test
+  - build
+  - deploy
+  - release
+  - benchmark
+
+image: $IMAGE:$UNITY_VERSION-base-$IMAGE_VERSION
+
+get-unity-version:
+  stage: prepare
+  image: alpine
+  variables:
+    GIT_DEPTH: 1
+    #CI_SERVER_URL: $INTERNAL_GITLAB_HOST:$INTERNAL_GITLAB_PORT 
+  script:
+    # Echo GitLab CI/CD environment variables
+    - echo "== CI/CD Variables =="
+    - echo $CI_REGISTRY
+    - echo $CI_REGISTRY_USER
+    - echo $CI_REGISTRY_PASSWORD
+    - echo "CI_PROJECT_NAME $CI_PROJECT_NAME"
+    - echo "CI_PROJECT_PATH $CI_PROJECT_PATH"
+    - echo "CI_REGISTRY $CI_REGISTRY"
+    - echo "CI_REGISTRY_USER $CI_REGISTRY_USER"
+    - echo $UNITY_ACCELERATOR
+    - echo UNITY_VERSION=$(cat $UNITY_DIR/ProjectSettings/ProjectVersion.txt | grep "m_EditorVersion:.*" | awk '{ print $2}') | tee prepare.env
+  artifacts:
+    reports:
+      dotenv: prepare.env
+
+.unity_before_script: &unity_before_script
+  before_script:  
+    - apt update && apt install gnupg -y
+    - echo "Testing Unity Accelerator connection..."
+    - curl -v $UNITY_ACCELERATOR/api/agent-health
+    - mkdir -p /root/.cache/unity3d/
+    - chmod +x ./ci/before_script.sh && ./ci/before_script.sh
+
+.unity_after_script: &unity_after_script
+  after_script:
+    - chmod +x ./ci/return_license.sh && ./ci/return_license.sh
+
+.cache: &cache
+  cache:
+    key: "$CI_PROJECT_NAMESPACE-$CI_PROJECT_NAME-$CI_COMMIT_REF_SLUG-$TEST_PLATFORM"
+    paths:
+      - $UNITY_DIR/Library/
+      - $UNITY_DIR/../unity-builder
+      # - $UNITY_DIR/Temp/
+      # - $UNITY_DIR/Logs/
+    policy: pull-push
+
+.license: &license
+  rules:
+    - if: '$UNITY_LICENSE != null'
+      when: always
+
+.unity_defaults: &unity_defaults
+  <<:
+    - *unity_before_script
+    - *cache
+    - *license
+    - *unity_after_script
+
+.test-with-junit-reports: &test-with-junit-reports
+  stage: test
+  <<: *unity_defaults
+  script:
+    # This could be made faster by adding these packages to base image or running in a separate job (and step)
+    # We could use an image with these two depencencies only and only do the saxonb-xslt command on
+    # previous job's artifacts
+    - apt-get update && apt-get install -y default-jre libsaxonb-java
+    - chmod +x ./ci/test.sh && ./ci/test.sh
+    - saxonb-xslt -s $UNITY_DIR/$TEST_PLATFORM-results.xml -xsl $CI_PROJECT_DIR/ci/nunit-transforms/nunit3-junit.xslt >$UNITY_DIR/$TEST_PLATFORM-junit-results.xml
+  artifacts:
+    when: always
+    paths:
+    # This is exported to allow viewing the Coverage Report in detail if needed
+    - $UNITY_DIR/$TEST_PLATFORM-coverage/
+    reports:
+      junit:
+        - $UNITY_DIR/$TEST_PLATFORM-junit-results.xml
+        - "$UNITY_DIR/$TEST_PLATFORM-coverage/coverage.xml"
+    expire_in: 2 weeks
+  coverage: /<Linecoverage>(.*?)</Linecoverage>/
+  needs:
+    - job: get-unity-version
+      artifacts: true
+  retry:
+    max: 2
+    when:
+      - always   # Retry regardless of the failure reason (default is "script_failure")
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+test-playmode-with-junit-reports:
+  <<: *test-with-junit-reports
+  variables:
+    TEST_PLATFORM: playmode
+    TESTING_TYPE: JUNIT
+
+test-editmode-with-junit-reports:
+  <<: *test-with-junit-reports
+  variables:
+    TEST_PLATFORM: editmode
+    TESTING_TYPE: JUNIT
+
+
+.build: &build
+  stage: build
+  <<: *unity_defaults
+  script:
+    - export DEBIAN_FRONTEND=noninteractive
+    - apt-get update && apt-get install -y vulkan-tools pciutils vulkan-tools mesa-utils
+    - nvidia-smi
+
+    - mkdir -p /usr/share/vulkan/
+    - cp -r /usr-share-vulkan/* /usr/share/vulkan/
+    - ls /usr/share/vulkan/
+
+    - apt-get install -y vulkan-tools pciutils vulkan-tools mesa-utils
+    - ls -l $VK_ICD_FILENAMES
+    - cat $VK_ICD_FILENAMES
+    - export XDG_RUNTIME_DIR=/run/user/$(id -u)
+
+    - ldconfig
+    - vulkaninfo --summary
+
+    - chmod +x ./ci/build.sh && ./ci/build.sh
+  artifacts:
+    paths:
+      - $UNITY_DIR/Builds/
+      - $UNITY_DIR/Addressables/
+  dependencies:
+    - get-unity-version
+  tags:
+    - nvidia
+
+build-StandaloneLinux64:
+  <<: *build
+  variables:
+    BUILD_TARGET: StandaloneLinux64
+    BUILD_SUBTARGET: Player
+
+build-Linux64Server:
+  <<: *build
+  image: $IMAGE:$UNITY_VERSION-linux-il2cpp-$IMAGE_VERSION
+  variables:
+    BUILD_TARGET: StandaloneLinux64
+    BUILD_SUBTARGET: Server
+    SCRIPTING_BACKEND: IL2CPP
+
+build-StandaloneWindows64:
+  <<: *build
+  image: $IMAGE:$UNITY_VERSION-windows-mono-$IMAGE_VERSION
+  variables:
+    BUILD_TARGET: StandaloneWindows64
+    BUILD_SUBTARGET: Player
+
+.benchmark: &benchmark
+  stage: benchmark
+  <<: *unity_defaults
+  script:
+    - apt-get update && apt-get install -y vulkan-tools nvidia-cuda-toolkit mesa-vulkan-drivers nvidia-driver-550
+    # Verify GPU access
+    - nvidia-smi
+    - vulkaninfo
+    - chmod +x ./ci/benchmark.sh && ./ci/benchmark.sh
+  dependencies:
+    - get-unity-version
+  artifacts:
+    when: always
+    paths:
+      - $UNITY_DIR/BenchmarkResults/*.json
+    expire_in: 2 weeks
+  tags:
+    - nvidia
+  retry:
+    max: 2
+    when:
+      - always   # Retry regardless of the failure reason (default is "script_failure")
+  variables:
+    NVIDIA_VISIBLE_DEVICES: "all"
+    NVIDIA_DRIVER_CAPABILITIES: "compute,utility,graphics"
+
+benchmark-scenes:
+  <<: *benchmark
+  parallel:
+    matrix:
+      - BENCHMARK_SCENE: "Assets/Scenes/SampleScene.unity"
+        BENCHMARK_DURATION: 30
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+.deploy: &deploy
+  stage: deploy
+  image:
+    name: $MINIO_IMAGE
+    entrypoint: ['']
+  variables:
+    MINIO_ALIAS: felsan-minio
+    MINIO_URL: $MINIO_ENDPOINT
+    MINIO_ACCESS_KEY: $MINIO_ACCESS_KEY
+    MINIO_SECRET_KEY: $MINIO_SECRET_KEY
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+upload-binaries:
+  <<: *deploy
+  script:
+    - echo "Using MinIO image- $MINIO_IMAGE_REPOSITORY:$MINIO_IMG"
+    - echo "Configuring MinIO..."
+    - mc alias set $MINIO_ALIAS $MINIO_URL $MINIO_ACCESS_KEY $MINIO_SECRET_KEY
+    - echo "Wiping the binaries bucket..."
+    - mc rm --recursive --force $MINIO_ALIAS/felsan-binaries
+    - echo "Uploading Unity executable binaries..."
+    - mc mirror --overwrite $UNITY_DIR/Builds $MINIO_ALIAS/felsan-binaries
+    - echo "Builds uploaded. Generating dynamic links..."
+    - echo $(mc share download $MINIO_ALIAS/felsan-binaries/StandaloneWindows64/StandaloneWindows64.zip | tail -1 | cut -d' ' -f2-) > StandaloneWindows64_link.txt
+    - echo $(mc share download $MINIO_ALIAS/felsan-binaries/StandaloneLinux64/StandaloneLinux64.zip | tail -1 | cut -d' ' -f2-) > StandaloneLinux64_link.txt
+  artifacts:
+    paths:
+      - StandaloneWindows64_link.txt
+      - StandaloneLinux64_link.txt
+  dependencies:
+    - build-StandaloneWindows64
+    - build-StandaloneLinux64
+
+upload-addressables:
+  <<: *deploy
+  script:
+    - echo "Using MinIO image- $MINIO_IMAGE_REPOSITORY:$MINIO_IMG"
+    - echo "Configuring MinIO..."
+    - mc alias set $MINIO_ALIAS $MINIO_URL $MINIO_ACCESS_KEY $MINIO_SECRET_KEY
+    - echo "Wiping the addressables bucket..."
+    - mc rm --recursive --force $MINIO_ALIAS/felsan-addressables
+    - echo "Uploading Unity Addressables..."
+    - mc mirror --overwrite $UNITY_DIR/Addressables $MINIO_ALIAS/felsan-addressables
+    - echo "Addressables uploaded. Access at:"
+    - mc find $MINIO_ALIAS/felsan-addressables --exec 'echo https://s3.felsan.net/{}'
+  dependencies:
+    - build-StandaloneWindows64
+    - build-StandaloneLinux64
+
+upload-server:
+  image: docker
+  stage: deploy
+  dependencies:
+    - build-Linux64Server  # � Ensures build is complete before deploying
+  before_script:
+    # Convert CI_PROJECT_PATH to lowercase
+    - export LOWERCASE_PROJECT_PATH=$(echo "$CI_PROJECT_PATH" | tr '[:upper:]' '[:lower:]')
+    - echo "Lowercase project path - $LOWERCASE_PROJECT_PATH"
+
+    # Authenticate Docker with the GitLab Container Registry
+    - echo "CI_REGISTRY_PASSWORD starts with ${CI_REGISTRY_PASSWORD:0:6}******"
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+    - ls -l /var/run/docker.sock
+    - docker info | grep -i insecure
+
+  script:
+    # Build Unity server Docker image
+    - export DOCKER_IMAGE="$CI_REGISTRY/$LOWERCASE_PROJECT_PATH:$CI_COMMIT_BRANCH"
+    - docker build -t $DOCKER_IMAGE -f ./ci/ci/UnityServer.Dockerfile .
+    - docker push $DOCKER_IMAGE
+
+create-release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  variables:
+    #CI_SERVER_URL: $INTERNAL_GITLAB_HOST:$INTERNAL_GITLAB_PORT
+  script:
+    - export TAG_NAME="v$(date +'%Y.%m.%d')-${CI_PIPELINE_IID}"
+    - export WINDOWS_LINK=$(cat StandaloneWindows64_link.txt)
+    - export LINUX_LINK=$(cat StandaloneLinux64_link.txt)
+    - echo "Using Windows URL $WINDOWS_LINK"
+    - echo "Using Linux URL $LINUX_LINK"
+    - echo "Creating release with tag $TAG_NAME"
+    - release-cli create --name "Release $TAG_NAME" --tag-name "$TAG_NAME" --description "$TAG_NAME - $(git log -1 --pretty=%B)" --ref "$CI_COMMIT_SHA" --assets-link "{\"name\":\"build-StandaloneWindows64\",\"url\":\"$WINDOWS_LINK\"}" --assets-link "{\"name\":\"build-StandaloneLinux64\",\"url\":\"$LINUX_LINK\"}" 
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == "master"
+  dependencies:
+    - upload-binaries
+
+pages:
+  image: alpine:latest
+  stage: deploy
+  script:
+    - mv "$UNITY_DIR/Builds/WebGL/${BUILD_NAME}" public
+  artifacts:
+    paths:
+      - public
+  only:
+    - $CI_DEFAULT_BRANCH
+
+workflow:
+  rules:
+    - if: $CI_MERGE_REQUEST_ID
+      when: never
+    - if: $CI_COMMIT_TAG
+      when: never
+    - when: always
+      
