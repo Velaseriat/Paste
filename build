@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+#UNITY_LICENSING_CLIENT="/opt/unity/Editor/Data/Resources/Licensing/Client/Unity.Licensing.Client"
+
+echo "Building for $BUILD_TARGET $BUILD_SUBTARGET"
+
+export BUILD_PATH=$UNITY_DIR/Builds/$BUILD_TARGET/
+mkdir -p $BUILD_PATH
+
+export ADDRESSABLES_PATH=$UNITY_DIR/Addressables/$BUILD_TARGET/
+mkdir -p $ADDRESSABLES_PATH
+
+${UNITY_EXECUTABLE:-xvfb-run --auto-servernum --server-args='-screen 0 640x480x24' unity-editor} \
+  -force-vulkan \
+  -projectPath $UNITY_DIR \
+  -enableCacheServer \
+  -cacheServerEndpoint $UNITY_ACCELERATOR \
+  -cacheServerWaitForUploadCompletion \
+  -quit \
+  -batchmode \
+  -buildTarget $BUILD_TARGET \
+  -standaloneBuildSubtarget $BUILD_SUBTARGET \
+  -customBuildTarget $BUILD_TARGET \
+  -customBuildName $BUILD_NAME \
+  -customBuildPath $BUILD_PATH \
+  -customAddressablesPath $ADDRESSABLES_PATH \
+  -executeMethod BuildCommand.PerformBuild \
+  -logFile /dev/stdout
+
+UNITY_EXIT_CODE=$?
+
+if [ $UNITY_EXIT_CODE -eq 0 ]; then
+  echo "Run succeeded, no failures occurred";
+elif [ $UNITY_EXIT_CODE -eq 2 ]; then
+  echo "Run succeeded, some tests failed";
+elif [ $UNITY_EXIT_CODE -eq 3 ]; then
+  echo "Run failure (other failure)";
+else
+  echo "Unexpected exit code $UNITY_EXIT_CODE";
+fi
+
+ls -la $BUILD_PATH
+[ -n "$(ls -A $BUILD_PATH)" ] # fail job if build folder is empty
+
+# Zip builds and clean up if on the default branch
+if [ "$CI_COMMIT_BRANCH" == "$CI_DEFAULT_BRANCH" ]; then
+  echo "On default branch: $CI_DEFAULT_BRANCH"
+
+  # Process each top-level build directory (StandaloneXXX64)
+  for DIR in "$UNITY_DIR/Builds/"*; do
+    if [ -d "$DIR" ]; then
+      TARGET_NAME=$(basename "$DIR")
+      ZIP_NAME="${DIR}/${TARGET_NAME}.zip"
+
+      echo "Zipping contents of $DIR into $ZIP_NAME..."
+      cd "$DIR" && zip -r "$ZIP_NAME" ./* && cd -
+
+      echo "Deleting all contents in $DIR except $ZIP_NAME..."
+      find "$DIR" -mindepth 1 -not -name "$(basename "$ZIP_NAME")" -exec rm -rf {} +
+
+      echo "Directory $DIR compressed and cleaned."
+    fi
+  done
+else
+  echo "Not on default branch ($CI_DEFAULT_BRANCH), skipping zipping."
+fi
