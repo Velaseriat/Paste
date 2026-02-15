@@ -120,12 +120,9 @@ namespace Felsan.Scripts.Shared.Handlers
             _goToSceneEventChannel?.Unsubscribe(GoToScene);
         }
 
-        public void GoToScene(ScenePayload scenePayload)
+        private void GoToScene(ScenePayload scenePayload)
         {
-            if (scenePayload.IsGameScene)
-                GoToGame(scenePayload.SceneName, scenePayload.OriginalScene);
-            else
-                GoToScene(scenePayload.SceneName, scenePayload.OriginalScene);
+            GoToScene(scenePayload.SceneName, scenePayload.OriginalScene);
         }
 
         #endregion
